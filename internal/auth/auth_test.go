@@ -34,10 +34,8 @@ func TestProperty_ProfileCredentialIsolation(t *testing.T) {
 		"profile2",
 	)
 
-	// Generator for token values
-	genTokenValue := gen.AlphaString().SuchThat(func(s string) bool {
-		return len(s) >= 10 && len(s) <= 50
-	})
+	// Generator for token values - simplified to avoid too many rejections
+	genTokenValue := gen.RegexMatch("[a-zA-Z]{10,50}")
 
 	// Generator for usernames
 	genUsername := gen.OneConstOf(
