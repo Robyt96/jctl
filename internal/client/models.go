@@ -123,3 +123,49 @@ type ProgressiveLogResponse struct {
 	NextOffset  int64  // Byte offset for next request (from X-Text-Size header)
 	HasMoreData bool   // Whether build is still running (from X-More-Data header)
 }
+
+// InputStep represents a pending input step in a pipeline build
+type InputStep struct {
+	ID         string           `json:"id"`         // Unique identifier for this input step
+	Message    string           `json:"message"`    // Prompt message to display to user
+	OK         string           `json:"ok"`         // Text for approval button (e.g., "Proceed", "Deploy")
+	Abort      string           `json:"abort"`      // Text for abort button (e.g., "Abort", "Cancel")
+	Parameters []InputParameter `json:"parameters"` // Parameters required for this input
+}
+
+// InputParameter represents a parameter required for an input step
+type InputParameter struct {
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Type         string   `json:"type"` // "string", "boolean", "choice", "password"
+	DefaultValue string   `json:"defaultValue"`
+	Choices      []string `json:"choices"` // For choice type parameters
+}
+
+// WorkflowDescription represents the workflow API response
+type WorkflowDescription struct {
+	ID                  string        `json:"id"`
+	Name                string        `json:"name"`
+	Status              string        `json:"status"`
+	StartTimeMillis     int64         `json:"startTimeMillis"`
+	EndTimeMillis       int64         `json:"endTimeMillis"`
+	DurationMillis      int64         `json:"durationMillis"`
+	PendingInputActions []InputAction `json:"pendingInputActions"`
+}
+
+// InputAction represents a pending input action from the workflow API
+type InputAction struct {
+	ID          string                 `json:"id"`
+	Message     string                 `json:"message"`
+	ProceedText string                 `json:"proceedText"`
+	AbortText   string                 `json:"abortText"`
+	Inputs      []InputParameterDetail `json:"inputs"`
+}
+
+// InputParameterDetail represents detailed parameter information from workflow API
+type InputParameterDetail struct {
+	Name         string      `json:"name"`
+	Description  string      `json:"description"`
+	Type         string      `json:"type"`
+	DefaultValue interface{} `json:"defaultValue"`
+}

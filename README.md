@@ -9,6 +9,7 @@ A powerful command-line interface for interacting with Jenkins CI/CD servers. Ma
 - 🚀 **Pipeline Management** - List and browse Jenkins pipelines and folders
 - 📊 **Build Information** - View build history with status and timestamps
 - 📝 **Log Streaming** - Access build logs with real-time streaming support
+- 💬 **Interactive Input Handling** - Automatically detect and respond to pipeline input steps
 - ⚡ **Build Triggering** - Start builds with parameters and follow progress
 - 🔐 **Secure Authentication** - Support for API tokens and OAuth
 - 👤 **Profile Management** - Configure multiple Jenkins instances and switch between them
@@ -169,6 +170,28 @@ jctl logs my-pipeline 42
 jctl logs my-pipeline 42 --follow
 ```
 
+**Interactive Input Handling**
+
+When following logs with `--follow`, jctl automatically detects when a build is waiting for user input (such as approval steps) and prompts you interactively:
+
+```bash
+# Follow logs - will prompt for input when needed
+jctl logs my-pipeline 42 --follow
+
+# Example interaction:
+# === Input Required ===
+# Are you sure to proceed with this plan?
+#
+# Proceed? (y/n): y
+# Input submitted. Continuing...
+```
+
+The tool supports:
+- **Simple approvals**: Yes/No prompts for approval steps
+- **Parameterized inputs**: Prompts for each required parameter with descriptions and default values
+- **Automatic detection**: Checks for pending inputs every 2 seconds during log streaming
+- **Graceful handling**: Allows aborting the build by typing 'n' or 'abort'
+
 #### Trigger
 
 Trigger a new build:
@@ -180,9 +203,15 @@ jctl trigger my-pipeline
 # Trigger with parameters
 jctl trigger my-pipeline --param ENV=staging --param VERSION=1.2.3
 
-# Trigger and follow logs
+# Trigger and follow logs (with automatic input handling)
 jctl trigger my-pipeline --param BRANCH=main --follow
 ```
+
+When using `--follow` with the trigger command, jctl will:
+1. Wait for the build to start
+2. Stream logs in real-time
+3. Automatically detect and prompt for any input steps
+4. Display the final build status
 
 #### Authentication
 
@@ -325,6 +354,59 @@ jctl trigger my-pipeline \
 
 # Trigger and follow logs
 jctl trigger my-pipeline --param BRANCH=feature/new-feature --follow
+```
+
+### Interactive Input Handling
+
+When a build requires manual approval or input, jctl will automatically prompt you:
+
+```bash
+# Trigger a deployment that requires approval
+jctl trigger deploy-to-production --param VERSION=2.0.0 --follow
+
+# Output:
+# ✓ Build triggered successfully for pipeline: deploy-to-production
+# Queue ID: 123
+# Waiting for build to start...
+# 
+# ✓ Build #45 started
+# Streaming logs...
+# 
+# [build output...]
+# 
+# === Input Required ===
+# Are you sure you want to deploy version 2.0.0 to production?
+# 
+# Proceed? (y/n): y
+# Input submitted. Continuing...
+# 
+# [continued build output...]
+# 
+# ✓ Build #45 completed with status: SUCCESS
+```
+
+For parameterized inputs:
+
+```bash
+# Build with multiple input parameters
+jctl logs infrastructure-apply 67 --follow
+
+# Output:
+# === Input Required ===
+# Please confirm the infrastructure changes
+# 
+# Please provide values for the following parameters:
+# 
+# REGION: Target AWS region
+#   (default: us-east-1)
+# Value: us-west-2
+# 
+# INSTANCE_COUNT: Number of instances to create
+#   (default: 3)
+# Value: 5
+# 
+# Submit these values? (y/n/abort): y
+# Input submitted. Continuing...
 ```
 
 ### Multiple Profiles

@@ -127,11 +127,18 @@ This implementation plan breaks down the jctl CLI tool into discrete, incrementa
     - Return ProgressiveLogResponse with content, nextOffset, hasMoreData
     - _Requirements: 3.5, 4.6_
 
-  - [ ]* 5.5 Write property test for error message descriptiveness
+  - [x] 5.5 Implement input step handling API methods
+    - GetPendingInputs(jobName, buildNumber) - GET /job/{name}/{number}/wfapi/describe
+    - Parse pendingInputActions from workflow API response
+    - SubmitInput(jobName, buildNumber, inputID, params) - POST /job/{name}/{number}/input/{inputId}/submit
+    - AbortInput(jobName, buildNumber, inputID) - POST /job/{name}/{number}/input/{inputId}/abort
+    - _Requirements: 10.1, 10.5, 10.6_
+
+  - [ ]* 5.6 Write property test for error message descriptiveness
     - **Property 10: Error Message Descriptiveness**
     - **Validates: Requirements 1.3, 2.3, 3.3, 4.5, 7.1, 7.2, 7.3, 7.4**
 
-  - [ ]* 5.6 Write property test for non-existent resource handling
+  - [ ]* 5.7 Write property test for non-existent resource handling
     - **Property 11: Non-Existent Resource Handling**
     - **Validates: Requirements 2.3, 3.3**
 
@@ -205,15 +212,29 @@ This implementation plan breaks down the jctl CLI tool into discrete, incrementa
     - Handle signal interrupts gracefully
     - _Requirements: 3.5_
 
-  - [ ]* 9.3 Write property test for progressive log completeness
+  - [x] 9.3 Add interactive input handling during log following
+    - Poll for pending inputs using GetPendingInputs()
+    - When input detected, display prompt message to user
+    - For simple approval: prompt "Proceed? (y/n)"
+    - For parameterized input: prompt for each parameter
+    - Read user input from stdin
+    - Submit input using SubmitInput() or AbortInput()
+    - Continue log streaming after input submission
+    - _Requirements: 10.1, 10.2, 10.3, 10.4, 10.5, 10.6, 10.7_
+
+  - [ ]* 9.4 Write property test for input step handling
+    - **Property 18: Input Step Handling**
+    - **Validates: Requirements 10.1, 10.2, 10.3, 10.4, 10.5**
+
+  - [ ]* 9.5 Write property test for progressive log completeness
     - **Property 17: Progressive Log Completeness**
     - **Validates: Requirements 3.5**
 
-  - [ ]* 9.4 Write property test for log content completeness
+  - [ ]* 9.6 Write property test for log content completeness
     - **Property 3: Log Content Completeness**
     - **Validates: Requirements 3.1, 3.2**
 
-  - [ ]* 9.5 Write unit test for in-progress build logs
+  - [ ]* 9.7 Write unit test for in-progress build logs
     - Test partial log display for running builds
     - _Requirements: 3.4_
 

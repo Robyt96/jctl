@@ -255,6 +255,9 @@ Each command has a dedicated handler that implements the business logic.
   - Continuously polls Jenkins API for new log content
   - Displays new log lines as they become available
   - Tracks byte offset to avoid re-displaying content
+  - Detects pending input steps
+  - Prompts user for input when input step is detected
+  - Submits input to Jenkins and continues streaming
   - Exits when build completes or user interrupts (Ctrl+C)
 
 **TriggerHandler:**
@@ -267,6 +270,7 @@ Each command has a dedicated handler that implements the business logic.
   - Waits for build to start (polls queue item)
   - Once build starts, retrieves build number
   - Streams build logs progressively until completion
+  - Detects and handles input steps interactively
   - Displays final build status (SUCCESS, FAILURE, etc.)
 
 **ProfileListHandler:**
@@ -312,6 +316,9 @@ CommandHandler:
 - `POST /job/{name}/buildWithParameters` - Trigger build with parameters
 - `GET /job/{name}/{number}/api/json` - Get build details
 - `GET /queue/item/{id}/api/json` - Get queue item status
+- `GET /job/{name}/{number}/wfapi/describe` - Get workflow execution details (includes pending inputs)
+- `POST /job/{name}/{number}/input/{inputId}/submit` - Submit input for approval step
+- `POST /job/{name}/{number}/input/{inputId}/abort` - Abort input step
 
 **Interface:**
 ```
@@ -325,6 +332,9 @@ JenkinsClient:
   - TriggerBuild(jobName: string, params: Map<string, string>) -> Result<QueueItem, Error>
   - GetBuildInfo(jobName: string, buildNumber: int) -> Result<Build, Error>
   - GetQueueItem(queueID: int) -> Result<QueueItem, Error>
+  - GetPendingInputs(jobName: string, buildNumber: int) -> Result<[]InputStep, Error>
+  - SubmitInput(jobName: string, buildNumber: int, inputID: string, params: Map<string, string>) -> Result<void, Error>
+  - AbortInput(jobName: string, buildNumber: int, inputID: string) -> Result<void, Error>
 ```
 
 **Progressive Log Streaming:**
@@ -343,6 +353,21 @@ The progressive log feature uses Jenkins' `progressiveText` API endpoint which r
    - If "true": wait 1-2 seconds, goto step 2
    - If "false": build complete, exit
 6. Handle user interrupt (Ctrl+C) gracefully
+
+**Input Step Handling:**
+
+When following logs, jctl periodically checks for pending input steps:
+
+1. Poll workflow API: `GET /job/{name}/{number}/wfapi/describe`
+2. Check for `pendingInputActions` in response
+3. If input detected:
+   - Display input message/prompt to user
+   - For simple approval: prompt "Proceed? (y/n)"
+   - For parameterized input: prompt for each parameter
+   - Read user input from stdin
+   - Submit via: `POST /job/{name}/{number}/input/{inputId}/submit` with parameters
+   - Continue log streaming
+4. If user types "abort" or Ctrl+C: call abort endpoint
 
 ## Data Models
 
@@ -394,6 +419,26 @@ ProgressiveLogResponse:
   - content: string  // New log content since last request
   - nextOffset: int64  // Byte offset for next request (from X-Text-Size header)
   - hasMoreData: bool  // Whether build is still running (from X-More-Data header)
+```
+
+### InputStep
+```
+InputStep:
+  - id: string  // Unique identifier for this input step
+  - message: string  // Prompt message to display to user
+  - ok: string  // Text for approval button (e.g., "Proceed", "Deploy")
+  - abort: string  // Text for abort button (e.g., "Abort", "Cancel")
+  - parameters: []InputParameter  // Parameters required for this input
+```
+
+### InputParameter
+```
+InputParameter:
+  - name: string
+  - description: string
+  - type: string  // "string", "boolean", "choice", "password"
+  - defaultValue: string
+  - choices: []string  // For choice type parameters
 ```
 
 ### Token
@@ -508,6 +553,10 @@ A property is a characteristic or behavior that should hold true across all vali
 ### Property 17: Progressive Log Completeness
 *For any* running build, when jctl follows logs with the --follow flag, all log content produced by the build should be displayed exactly once without duplication or omission.
 **Validates: Requirements 3.5, 4.6**
+
+### Property 18: Input Step Handling
+*For any* build with pending input steps, when jctl detects the input request during log following, the user should be prompted with the input message and their response should be successfully submitted to Jenkins.
+**Validates: Requirements 10.1, 10.2, 10.3, 10.4, 10.5**
 
 ## Error Handling
 

@@ -40,5 +40,5 @@ debug
 __debug_bin
 
 # Application specific
-jctl
+/jctl
 *.log

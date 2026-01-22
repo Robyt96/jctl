@@ -15,6 +15,7 @@ A command-line interface tool for interacting with Jenkins CI/CD servers. The to
 - **Browser_Authentication**: OAuth or similar web-based authentication flow initiated from the CLI
 - **Build_Parameters**: Key-value pairs passed to a Pipeline when triggering a build
 - **Build_Log**: The console output generated during a Build execution
+- **Input_Step**: A pipeline step that pauses execution and waits for user input or approval
 
 ## Requirements
 
@@ -126,3 +127,17 @@ A command-line interface tool for interacting with Jenkins CI/CD servers. The to
 5. WHEN the user authenticates with a Profile, THE jctl SHALL store credentials associated with that Profile name
 6. WHEN the user switches between Profiles, THE jctl SHALL use the appropriate credentials for each Profile
 7. WHEN a specified Profile does not exist, THE jctl SHALL display an error message listing available Profiles
+
+### Requirement 10: Interactive Input Handling
+
+**User Story:** As a developer, I want to provide input to pipeline steps that require manual approval or data entry, so that I can complete builds that have interactive stages without using the Jenkins UI.
+
+#### Acceptance Criteria
+
+1. WHEN a build is waiting for an Input_Step, THE jctl SHALL detect the pending input request
+2. WHEN an Input_Step is detected during log following, THE jctl SHALL display the input prompt message to the user
+3. WHEN an Input_Step requires a simple approval, THE jctl SHALL prompt the user to proceed or abort
+4. WHEN an Input_Step requires parameter input, THE jctl SHALL prompt the user for each required parameter value
+5. WHEN the user provides input, THE jctl SHALL submit the input to the Jenkins_API and resume log streaming
+6. WHEN the user aborts an Input_Step, THE jctl SHALL submit the abort action and the build SHALL be aborted
+7. WHEN multiple Input_Steps occur in sequence, THE jctl SHALL handle each one interactively

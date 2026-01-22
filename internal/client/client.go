@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"time"
@@ -455,4 +456,319 @@ func (c *Client) GetQueueItem(ctx context.Context, queueID int) (*QueueItem, err
 	}
 
 	return &queueItem, nil
+}
+
+// GetPendingInputs retrieves pending input steps for a build
+// This uses the workflow API to detect when a build is waiting for user input
+// jobName can be a simple name or a folder path like "folder1/folder2/jobname"
+func (c *Client) GetPendingInputs(ctx context.Context, jobName string, buildNumber int) ([]InputStep, error) {
+	// Build the path - handle folder paths by encoding each segment
+	segments := strings.Split(jobName, "/")
+	encodedSegments := make([]string, len(segments))
+	for i, segment := range segments {
+		encodedSegments[i] = url.PathEscape(segment)
+	}
+	jobPath := "/job/" + strings.Join(encodedSegments, "/job/")
+
+	// First, try the workflow API
+	path := fmt.Sprintf("%s/%d/wfapi/describe", jobPath, buildNumber)
+
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return nil, err
+	}
+
+	// If the workflow API is not available (404), try alternative method
+	if resp.StatusCode == http.StatusNotFound {
+		return c.getPendingInputsFromBuildAPI(ctx, jobPath, buildNumber)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, parseError(resp)
+	}
+
+	var workflow WorkflowDescription
+	if err := parseJSON(resp, &workflow); err != nil {
+		return nil, err
+	}
+
+	// Debug logging to see what we got
+	if c.verbose {
+		fmt.Fprintf(os.Stderr, "[DEBUG] Workflow status: %s, PendingInputActions count: %d\n", workflow.Status, len(workflow.PendingInputActions))
+	}
+
+	// If status is PAUSED_PENDING_INPUT but no actions in the response,
+	// try the pendingInputActions endpoint directly
+	if workflow.Status == "PAUSED_PENDING_INPUT" && len(workflow.PendingInputActions) == 0 {
+		return c.getPendingInputsFromWorkflowAPI(ctx, jobPath, buildNumber)
+	}
+
+	// If no pending inputs found via workflow API, try the build API as fallback
+	if len(workflow.PendingInputActions) == 0 {
+		return c.getPendingInputsFromBuildAPI(ctx, jobPath, buildNumber)
+	}
+
+	// Convert InputActions to InputSteps
+	inputSteps := make([]InputStep, 0, len(workflow.PendingInputActions))
+	for _, action := range workflow.PendingInputActions {
+		step := InputStep{
+			ID:      action.ID,
+			Message: action.Message,
+			OK:      action.ProceedText,
+			Abort:   action.AbortText,
+		}
+
+		// Convert input parameters
+		if len(action.Inputs) > 0 {
+			step.Parameters = make([]InputParameter, 0, len(action.Inputs))
+			for _, input := range action.Inputs {
+				param := InputParameter{
+					Name:        input.Name,
+					Description: input.Description,
+					Type:        input.Type,
+				}
+
+				// Convert default value to string
+				if input.DefaultValue != nil {
+					param.DefaultValue = fmt.Sprintf("%v", input.DefaultValue)
+				}
+
+				step.Parameters = append(step.Parameters, param)
+			}
+		}
+
+		inputSteps = append(inputSteps, step)
+	}
+
+	return inputSteps, nil
+}
+
+// getPendingInputsFromBuildAPI tries to get pending inputs from the build API
+// This is a fallback when the workflow API doesn't return pending inputs
+func (c *Client) getPendingInputsFromBuildAPI(ctx context.Context, jobPath string, buildNumber int) ([]InputStep, error) {
+	// Try to get build info with actions that might contain input requests
+	path := fmt.Sprintf("%s/%d/api/json?tree=actions[*[*]]", jobPath, buildNumber)
+
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return []InputStep{}, nil // Return empty list on error
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return []InputStep{}, nil // Return empty list on error
+	}
+
+	var buildInfo map[string]interface{}
+	if err := parseJSON(resp, &buildInfo); err != nil {
+		return []InputStep{}, nil // Return empty list on parse error
+	}
+
+	if c.verbose {
+		fmt.Fprintf(os.Stderr, "[DEBUG] Checking build API for pending inputs\n")
+	}
+
+	// Look for InputRequiredAction in the actions array
+	actions, ok := buildInfo["actions"].([]interface{})
+	if !ok {
+		return []InputStep{}, nil
+	}
+
+	var inputSteps []InputStep
+	for _, action := range actions {
+		actionMap, ok := action.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Check if this is an input action
+		class, _ := actionMap["_class"].(string)
+		if !strings.Contains(class, "InputAction") && !strings.Contains(class, "InputRequiredAction") {
+			continue
+		}
+
+		// Extract input information
+		id, _ := actionMap["id"].(string)
+		message, _ := actionMap["message"].(string)
+		proceedText, _ := actionMap["proceedText"].(string)
+		abortText, _ := actionMap["abortText"].(string)
+
+		if id != "" {
+			step := InputStep{
+				ID:      id,
+				Message: message,
+				OK:      proceedText,
+				Abort:   abortText,
+			}
+
+			// Try to extract parameters if present
+			if params, ok := actionMap["parameters"].([]interface{}); ok {
+				step.Parameters = make([]InputParameter, 0, len(params))
+				for _, p := range params {
+					paramMap, ok := p.(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					param := InputParameter{
+						Name:        getString(paramMap, "name"),
+						Description: getString(paramMap, "description"),
+						Type:        getString(paramMap, "type"),
+					}
+
+					if defVal := paramMap["defaultValue"]; defVal != nil {
+						param.DefaultValue = fmt.Sprintf("%v", defVal)
+					}
+
+					step.Parameters = append(step.Parameters, param)
+				}
+			}
+
+			inputSteps = append(inputSteps, step)
+
+			if c.verbose {
+				fmt.Fprintf(os.Stderr, "[DEBUG] Found input step via build API: ID=%s, Message=%s\n", id, message)
+			}
+		}
+	}
+
+	return inputSteps, nil
+}
+
+// getPendingInputsFromWorkflowAPI gets pending inputs from the workflow pendingInputActions endpoint
+func (c *Client) getPendingInputsFromWorkflowAPI(ctx context.Context, jobPath string, buildNumber int) ([]InputStep, error) {
+	path := fmt.Sprintf("%s/%d/wfapi/pendingInputActions", jobPath, buildNumber)
+
+	if c.verbose {
+		fmt.Fprintf(os.Stderr, "[DEBUG] Fetching pending inputs from workflow API endpoint\n")
+	}
+
+	resp, err := c.get(ctx, path)
+	if err != nil {
+		return []InputStep{}, nil // Return empty list on error
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return []InputStep{}, nil // Return empty list on error
+	}
+
+	var actions []InputAction
+	if err := parseJSON(resp, &actions); err != nil {
+		return []InputStep{}, nil // Return empty list on parse error
+	}
+
+	if c.verbose {
+		fmt.Fprintf(os.Stderr, "[DEBUG] Found %d pending input actions from workflow API\n", len(actions))
+	}
+
+	// Convert InputActions to InputSteps
+	inputSteps := make([]InputStep, 0, len(actions))
+	for _, action := range actions {
+		step := InputStep{
+			ID:      action.ID,
+			Message: action.Message,
+			OK:      action.ProceedText,
+			Abort:   action.AbortText,
+		}
+
+		// Convert input parameters
+		if len(action.Inputs) > 0 {
+			step.Parameters = make([]InputParameter, 0, len(action.Inputs))
+			for _, input := range action.Inputs {
+				param := InputParameter{
+					Name:        input.Name,
+					Description: input.Description,
+					Type:        input.Type,
+				}
+
+				// Convert default value to string
+				if input.DefaultValue != nil {
+					param.DefaultValue = fmt.Sprintf("%v", input.DefaultValue)
+				}
+
+				step.Parameters = append(step.Parameters, param)
+			}
+		}
+
+		inputSteps = append(inputSteps, step)
+	}
+
+	return inputSteps, nil
+}
+
+// getString safely extracts a string from a map
+func getString(m map[string]interface{}, key string) string {
+	if val, ok := m[key].(string); ok {
+		return val
+	}
+	return ""
+}
+
+// SubmitInput submits user input for a pending input step
+// This allows the build to continue after receiving the required input
+// jobName can be a simple name or a folder path like "folder1/folder2/jobname"
+// params should contain values for any parameters required by the input step
+func (c *Client) SubmitInput(ctx context.Context, jobName string, buildNumber int, inputID string, params map[string]string) error {
+	// Build the path - handle folder paths by encoding each segment
+	segments := strings.Split(jobName, "/")
+	encodedSegments := make([]string, len(segments))
+	for i, segment := range segments {
+		encodedSegments[i] = url.PathEscape(segment)
+	}
+	jobPath := "/job/" + strings.Join(encodedSegments, "/job/")
+
+	var path string
+	var data url.Values
+
+	// If no parameters, use proceedEmpty endpoint for simple approval
+	if len(params) == 0 {
+		path = fmt.Sprintf("%s/%d/input/%s/proceedEmpty", jobPath, buildNumber, url.PathEscape(inputID))
+		data = nil
+	} else {
+		// With parameters, use submit endpoint
+		path = fmt.Sprintf("%s/%d/input/%s/submit", jobPath, buildNumber, url.PathEscape(inputID))
+		// Prepare form data with parameters
+		data = url.Values{}
+		for key, value := range params {
+			data.Set(key, value)
+		}
+	}
+
+	resp, err := c.post(ctx, path, data)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Jenkins returns 200 or 302 on successful input submission
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return parseError(resp)
+	}
+
+	return nil
+}
+
+// AbortInput aborts a pending input step, causing the build to be aborted
+// jobName can be a simple name or a folder path like "folder1/folder2/jobname"
+func (c *Client) AbortInput(ctx context.Context, jobName string, buildNumber int, inputID string) error {
+	// Build the path - handle folder paths by encoding each segment
+	segments := strings.Split(jobName, "/")
+	encodedSegments := make([]string, len(segments))
+	for i, segment := range segments {
+		encodedSegments[i] = url.PathEscape(segment)
+	}
+	jobPath := "/job/" + strings.Join(encodedSegments, "/job/")
+	path := fmt.Sprintf("%s/%d/input/%s/abort", jobPath, buildNumber, url.PathEscape(inputID))
+
+	resp, err := c.post(ctx, path, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	// Jenkins returns 200 or 302 on successful abort
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusFound && resp.StatusCode != http.StatusSeeOther {
+		return parseError(resp)
+	}
+
+	return nil
 }
