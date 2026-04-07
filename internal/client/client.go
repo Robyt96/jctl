@@ -170,13 +170,14 @@ func buildQueryString(params map[string]string) string {
 // ListJobs retrieves all jobs from Jenkins, optionally within a specific folder
 // folderPath should be in the format "folder1/folder2" or empty string for root
 func (c *Client) ListJobs(ctx context.Context, folderPath string) ([]Job, error) {
-	// Build the path based on folder
+	// Build the path based on folder location
 	var path string
 	if folderPath == "" {
-		// Root level
+		// Root level - use simple API endpoint
 		path = "/api/json?tree=jobs[name,url,color,description,buildable,_class,lastBuild[number,url]]"
 	} else {
-		// Inside a folder - need to URL encode each folder segment
+		// Inside a folder - need to URL encode each folder segment to handle special characters
+		// Jenkins folder paths use /job/ as separator between segments
 		segments := strings.Split(folderPath, "/")
 		encodedSegments := make([]string, len(segments))
 		for i, segment := range segments {
@@ -207,13 +208,16 @@ func (c *Client) ListJobs(ctx context.Context, folderPath string) ([]Job, error)
 // name can be a simple name or a folder path like "folder1/folder2/jobname"
 func (c *Client) GetJob(ctx context.Context, name string) (*Job, error) {
 	// Build the path - handle folder paths by encoding each segment
+	// This ensures special characters and spaces in job/folder names are properly handled
 	segments := strings.Split(name, "/")
 	encodedSegments := make([]string, len(segments))
 	for i, segment := range segments {
 		encodedSegments[i] = url.PathEscape(segment)
 	}
 	jobPath := "/job/" + strings.Join(encodedSegments, "/job/")
-	// Include property information to get parameter definitions
+
+	// Include property information to get parameter definitions for the job
+	// This allows us to show what parameters the job accepts when triggering builds
 	path := jobPath + "/api/json?tree=name,url,description,color,buildable,_class,lastBuild[number,url],property[parameterDefinitions[name,type,description,defaultParameterValue[value]]]"
 
 	resp, err := c.get(ctx, path)
@@ -305,15 +309,16 @@ func (c *Client) TriggerBuild(ctx context.Context, jobName string, params map[st
 	var path string
 	var data url.Values
 
+	// Jenkins uses different endpoints for parameterized vs non-parameterized builds
 	if len(params) > 0 {
-		// Build with parameters
+		// Build with parameters - use buildWithParameters endpoint
 		path = jobPath + "/buildWithParameters"
 		data = url.Values{}
 		for key, value := range params {
 			data.Set(key, value)
 		}
 	} else {
-		// Build without parameters
+		// Build without parameters - use simple build endpoint
 		path = jobPath + "/build"
 	}
 
@@ -322,23 +327,27 @@ func (c *Client) TriggerBuild(ctx context.Context, jobName string, params map[st
 		return nil, err
 	}
 
+	// Jenkins returns 201 Created or 200 OK on successful build trigger
 	if resp.StatusCode != http.StatusCreated && resp.StatusCode != http.StatusOK {
 		return nil, parseError(resp)
 	}
 
 	// Jenkins returns the queue item location in the Location header
+	// This allows tracking the build as it moves from queue to execution
 	location := resp.Header.Get("Location")
 	if location == "" {
 		return &QueueItem{}, nil
 	}
 
-	// Extract queue ID from location
+	// Extract queue ID from location URL
 	// Location format: http://jenkins/queue/item/{id}/
+	// We need the numeric ID to query queue status later
 	parts := strings.Split(strings.TrimSuffix(location, "/"), "/")
 	if len(parts) > 0 {
 		queueIDStr := parts[len(parts)-1]
 		queueID, err := strconv.Atoi(queueIDStr)
 		if err != nil {
+			// If we can't parse the ID, still return a queue item with the string ID
 			return &QueueItem{
 				Task: TaskRef{
 					Name: jobName,
@@ -362,13 +371,17 @@ func (c *Client) TriggerBuild(ctx context.Context, jobName string, params map[st
 // jobName can be a simple name or a folder path like "folder1/folder2/jobname"
 func (c *Client) GetBuildInfo(ctx context.Context, jobName string, buildNumber int) (*Build, error) {
 	// Build the path - handle folder paths by encoding each segment
+	// Folder paths must be URL-encoded to handle special characters and spaces
 	segments := strings.Split(jobName, "/")
 	encodedSegments := make([]string, len(segments))
 	for i, segment := range segments {
 		encodedSegments[i] = url.PathEscape(segment)
 	}
 	jobPath := "/job/" + strings.Join(encodedSegments, "/job/")
-	path := fmt.Sprintf("%s/%d/api/json", jobPath, buildNumber)
+
+	// Use tree parameter to request specific fields including parameters from actions array
+	// The actions[parameters[name,value]] part ensures we get parameter data in the response
+	path := fmt.Sprintf("%s/%d/api/json?tree=number,result,timestamp,duration,building,url,actions[parameters[name,value]]", jobPath, buildNumber)
 
 	resp, err := c.get(ctx, path)
 	if err != nil {
@@ -415,7 +428,8 @@ func (c *Client) GetProgressiveLog(ctx context.Context, jobName string, buildNum
 		return nil, err
 	}
 
-	// Parse X-Text-Size header to get next offset
+	// Parse X-Text-Size header to get next offset for subsequent requests
+	// This tells us where to start reading from next time to avoid duplicate content
 	textSizeStr := resp.Header.Get("X-Text-Size")
 	var nextOffset int64
 	if textSizeStr != "" {
@@ -426,6 +440,7 @@ func (c *Client) GetProgressiveLog(ctx context.Context, jobName string, buildNum
 	}
 
 	// Parse X-More-Data header to check if build is still running
+	// "true" means more log data will be generated, "false" means build is complete
 	moreDataStr := resp.Header.Get("X-More-Data")
 	hasMoreData := moreDataStr == "true"
 
@@ -719,12 +734,13 @@ func (c *Client) SubmitInput(ctx context.Context, jobName string, buildNumber in
 	var path string
 	var data url.Values
 
+	// Jenkins has different endpoints for simple approval vs parameterized input
 	// If no parameters, use proceedEmpty endpoint for simple approval
 	if len(params) == 0 {
 		path = fmt.Sprintf("%s/%d/input/%s/proceedEmpty", jobPath, buildNumber, url.PathEscape(inputID))
 		data = nil
 	} else {
-		// With parameters, use submit endpoint
+		// With parameters, use submit endpoint and encode parameters as form data
 		path = fmt.Sprintf("%s/%d/input/%s/submit", jobPath, buildNumber, url.PathEscape(inputID))
 		// Prepare form data with parameters
 		data = url.Values{}

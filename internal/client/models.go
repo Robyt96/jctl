@@ -1,6 +1,9 @@
 package client
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Job represents a Jenkins job/pipeline
 type Job struct {
@@ -57,19 +60,70 @@ type BuildRef struct {
 
 // Build represents a Jenkins build
 type Build struct {
-	Number     int         `json:"number"`
-	URL        string      `json:"url"`
-	Result     string      `json:"result"` // SUCCESS, FAILURE, ABORTED, UNSTABLE, null (in progress)
-	Timestamp  int64       `json:"timestamp"`
-	Duration   int64       `json:"duration"`
-	Building   bool        `json:"building"`
-	Parameters []Parameter `json:"actions,omitempty"`
+	Number    int           `json:"number"`
+	URL       string        `json:"url"`
+	Result    string        `json:"result"` // SUCCESS, FAILURE, ABORTED, UNSTABLE, null (in progress)
+	Timestamp int64         `json:"timestamp"`
+	Duration  int64         `json:"duration"`
+	Building  bool          `json:"building"`
+	Actions   []BuildAction `json:"actions,omitempty"`
+}
+
+// ExtractParameters extracts parameter values from a build's actions array
+// Jenkins stores build parameters within the actions array, where each action can contain
+// different types of information. Parameters are typically in actions with _class of
+// "hudson.model.ParametersAction", but we iterate through all actions to collect all parameters.
+func (b *Build) ExtractParameters() []Parameter {
+	var params []Parameter
+	// Iterate through all actions to find those containing parameters
+	// Multiple actions may contain parameters, so we collect from all of them
+	for _, action := range b.Actions {
+		if len(action.Parameters) > 0 {
+			params = append(params, action.Parameters...)
+		}
+	}
+	return params
+}
+
+// BuildAction represents an action in a Jenkins build
+type BuildAction struct {
+	Parameters []Parameter `json:"parameters,omitempty"`
 }
 
 // Parameter represents a build parameter
 type Parameter struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name  string      `json:"name"`
+	Value interface{} `json:"value"`
+}
+
+// StringValue returns the parameter value as a string
+// Jenkins parameters can be of various types (string, boolean, number, etc.)
+// This method handles type conversion to ensure consistent string output for display
+func (p *Parameter) StringValue() string {
+	if p.Value == nil {
+		return ""
+	}
+
+	// Handle different parameter value types from Jenkins API
+	switch v := p.Value.(type) {
+	case string:
+		return v
+	case bool:
+		// Convert boolean to lowercase string for consistency
+		if v {
+			return "true"
+		}
+		return "false"
+	case float64:
+		// JSON unmarshaling converts all numbers to float64
+		// Use %v to avoid unnecessary decimal places for whole numbers
+		return fmt.Sprintf("%v", v)
+	case int, int64:
+		return fmt.Sprintf("%d", v)
+	default:
+		// Fallback for any other types (arrays, objects, etc.)
+		return fmt.Sprintf("%v", v)
+	}
 }
 
 // JobProperty represents job properties including parameters

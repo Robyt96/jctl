@@ -158,6 +158,75 @@ jctl builds list folder/subfolder/pipeline
 jctl builds list my-pipeline --output json
 ```
 
+Get parameters for a specific build:
+
+```bash
+# Get parameters for build #42
+jctl builds params my-pipeline 42
+
+# Get parameters for pipeline in folder
+jctl builds params folder/subfolder/pipeline 123
+
+# Output as JSON
+jctl builds params my-pipeline 42 --output json
+
+# Output as YAML
+jctl builds params my-pipeline 42 --output yaml
+```
+
+**What it does**: Retrieves and displays the parameter values that were used when a specific build was triggered. This is useful for:
+- **Debugging**: Understanding what configuration caused a build to succeed or fail
+- **Auditing**: Tracking what parameters were used for compliance or review purposes
+- **Reproducing builds**: Getting the exact parameter values to trigger an identical build
+
+Example output (text format):
+
+```
+Parameters for build #42 of pipeline my-pipeline:
+
+NAME            VALUE
+----            -----
+ENVIRONMENT     production
+VERSION         1.2.3
+DEPLOY_REGION   us-east-1
+```
+
+Example output (JSON format):
+
+```json
+[
+  {
+    "name": "ENVIRONMENT",
+    "value": "production"
+  },
+  {
+    "name": "VERSION",
+    "value": "1.2.3"
+  },
+  {
+    "name": "DEPLOY_REGION",
+    "value": "us-east-1"
+  }
+]
+```
+
+If a build has no parameters:
+
+```bash
+jctl builds params my-pipeline 42
+# Output: No parameters were used for build #42 of pipeline my-pipeline
+```
+
+**Common errors**:
+- `pipeline '<name>' not found`: The pipeline doesn't exist. Use `jctl pipelines list` to see available pipelines.
+- `build #<number> not found`: The build number doesn't exist for this pipeline. Use `jctl builds list <pipeline>` to see available builds.
+- `invalid build number`: Build number must be a positive integer.
+
+**Tips**:
+- For pipelines in folders, use forward slashes: `folder/subfolder/pipeline`
+- Use `--output json` to easily parse parameters in scripts
+- Combine with `jctl trigger` to reproduce a build: `jctl trigger my-pipeline --param ENV=production --param VERSION=1.2.3`
+
 #### Logs
 
 View console logs for a build:
